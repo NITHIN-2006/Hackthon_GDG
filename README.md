@@ -47,3 +47,9 @@ Review ratings and comments are stored in PostgreSQL and included in the admin
 panel's unified-user data. The current mobile/password flow does not verify
 ownership of the phone number; configure an OTP provider before using it for
 production accounts or sensitive workflows.
+
+To enable photo descriptions, set `GEMINI_API_KEY` in `server/.env` (never in
+the frontend `.env`) and restart the API. Users can upload a JPEG, PNG, or WebP
+photo under 5 MB; Gemini generates a short description for the AidMate, which
+the user can edit before broadcasting the request. Image analysis requires a
+valid user session and is limited to 20 requests per hour per API process.

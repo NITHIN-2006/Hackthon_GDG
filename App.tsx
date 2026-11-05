@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { UserData, UserRole, Deal, Notification, AidmateProfile, PendingAidmate } from './types';
 import SignUpPage from './components/auth/SignUpPage';
 import HomeDashboard from './components/home/HomeDashboard';
@@ -22,6 +22,7 @@ const App: React.FC = () => {
   const [activeChatRole, setActiveChatRole] = useState<'seeker' | 'provider'>('seeker');
   const [notification, setNotification] = useState<Notification | null>(null);
   const [isAuthRestoring, setIsAuthRestoring] = useState(true);
+  const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
 
   const [isAidmateActive, setIsAidmateActive] = useState(false);
 
@@ -105,10 +106,13 @@ const App: React.FC = () => {
 
       setJobBroadcasts(prev => [newBroadcast, ...prev]);
       
-      // Save to localStorage to sync across tabs (simulating backend pub/sub)
-      localStorage.setItem('new_broadcast', JSON.stringify(newBroadcast));
-      // Immediately remove it so the same broadcast can't get stuck, storage event still fires
-      localStorage.removeItem('new_broadcast');
+      if (broadcastChannelRef.current) {
+        broadcastChannelRef.current.postMessage(newBroadcast);
+      } else {
+        const crossTabBroadcast = { ...newBroadcast, imageUrl: undefined };
+        localStorage.setItem('new_broadcast', JSON.stringify(crossTabBroadcast));
+        localStorage.removeItem('new_broadcast');
+      }
 
       window.dispatchEvent(new CustomEvent('show-notification', {
         detail: { title: 'Request Broadcasted', body: `Notified all active AIDMATEs in your area about: ${service}` }
@@ -117,6 +121,30 @@ const App: React.FC = () => {
 
   useEffect(() => {
     initializeFirebase();
+    if (typeof BroadcastChannel !== 'undefined') {
+      broadcastChannelRef.current = new BroadcastChannel('aido_job_broadcasts');
+    }
+
+    const handleIncomingBroadcast = (newBroadcast: Deal) => {
+      setJobBroadcasts(prev => [newBroadcast, ...prev]);
+      if (isAidmateActive && newBroadcast.seekerMobile !== userData?.mobile) {
+        window.dispatchEvent(new CustomEvent('show-notification', {
+          detail: {
+            title: 'New Job Alert Nearby',
+            body: `${newBroadcast.seekerName} needs ${newBroadcast.service}. Tap 'My Work' to reply!`,
+            type: 'alert',
+          },
+        }));
+      }
+    };
+
+    const handleBroadcastMessage = (event: MessageEvent<Deal>) => {
+      if (event.data && typeof event.data === 'object' && event.data.id) {
+        handleIncomingBroadcast(event.data);
+      }
+    };
+
+    broadcastChannelRef.current?.addEventListener('message', handleBroadcastMessage);
     
     const handleShowNotification = (e: Event) => {
       const detail = (e as CustomEvent).detail;
@@ -125,18 +153,7 @@ const App: React.FC = () => {
 
         const handleStorage = (e: StorageEvent) => {
       if (e.key === 'new_broadcast' && e.newValue) {
-        const newBroadcast = JSON.parse(e.newValue);
-        setJobBroadcasts(prev => [newBroadcast, ...prev]);
-        
-        if (isAidmateActive && newBroadcast.seekerMobile !== userData?.mobile) {
-            window.dispatchEvent(new CustomEvent('show-notification', {
-                detail: { 
-                    title: 'New Job Alert Nearby', 
-                    body: `${newBroadcast.seekerName} needs ${newBroadcast.service}. Tap 'My Work' to reply!`,
-                    type: 'alert'
-                }
-            }));
-        }
+        handleIncomingBroadcast(JSON.parse(e.newValue) as Deal);
       }
       
       if (e.key === 'job_accepted' && e.newValue) {
@@ -170,6 +187,9 @@ const App: React.FC = () => {
     return () => {
       window.removeEventListener('show-notification', handleShowNotification);
       window.removeEventListener('storage', handleStorage);
+      broadcastChannelRef.current?.removeEventListener('message', handleBroadcastMessage);
+      broadcastChannelRef.current?.close();
+      broadcastChannelRef.current = null;
       if(unsubscribe) unsubscribe();
     };
   }, [isAidmateActive, userData]);

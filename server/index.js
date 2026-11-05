@@ -36,11 +36,17 @@ app.use(cors({
     callback(new Error('Origin is not allowed by CORS.'));
   },
 }));
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '8mb' }));
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+const imageAnalysisLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 20,
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -255,6 +261,82 @@ app.get('/api/v1/auth/me', requireAuth, async (req, res, next) => {
         : publicUser(user),
     });
   } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/v1/ai/analyze-image', requireAuth, imageAnalysisLimiter, async (req, res, next) => {
+  try {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      res.status(503).json({ error: 'Image analysis is not configured. Set GEMINI_API_KEY in server/.env.' });
+      return;
+    }
+
+    const imageDataUrl = String(req.body.imageDataUrl ?? '');
+    const service = String(req.body.service ?? '').trim().slice(0, 200);
+    const imageMatch = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/]+={0,2})$/.exec(imageDataUrl);
+    if (!imageMatch || Buffer.byteLength(imageMatch[2], 'base64') > 5 * 1024 * 1024) {
+      res.status(400).json({ error: 'Upload a JPEG, PNG, or WebP image smaller than 5 MB.' });
+      return;
+    }
+
+    const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+    const geminiResponse = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey,
+        },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              {
+                text: `Describe the visible household repair or service problem for an AidMate who may take this job. ${service ? `The customer's selected service is: ${service}.` : ''} Write 2-4 short, plain-language sentences describing only what is visible, useful work context, and any uncertainty. Do not diagnose hidden causes, invent details, or include personal information.`,
+              },
+              {
+                inline_data: {
+                  mime_type: imageMatch[1],
+                  data: imageMatch[2],
+                },
+              },
+            ],
+          }],
+          generationConfig: {
+            maxOutputTokens: 250,
+            temperature: 0.2,
+          },
+        }),
+        signal: AbortSignal.timeout(30_000),
+      },
+    );
+    const data = await geminiResponse.json();
+    if (!geminiResponse.ok) {
+      console.error('Gemini image analysis failed:', geminiResponse.status, data.error?.message || 'Unknown provider error');
+      res.status(geminiResponse.status === 429 ? 429 : 502).json({
+        error: geminiResponse.status === 429
+          ? 'Image analysis is temporarily rate-limited. Please try again later.'
+          : 'Image analysis failed. Check the Gemini API key and try again.',
+      });
+      return;
+    }
+
+    const description = data.candidates?.[0]?.content?.parts
+      ?.map(part => part.text || '')
+      .join('\n')
+      .trim();
+    if (!description) {
+      res.status(502).json({ error: 'The image could not be described. Try another photo.' });
+      return;
+    }
+    res.json({ description });
+  } catch (error) {
+    if (error.name === 'TimeoutError' || error.name === 'AbortError') {
+      res.status(504).json({ error: 'Image analysis timed out. Please try again.' });
+      return;
+    }
     next(error);
   }
 });

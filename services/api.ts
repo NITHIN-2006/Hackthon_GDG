@@ -110,3 +110,14 @@ export async function submitReview(input: {
     body: JSON.stringify(input),
   }, true);
 }
+
+export async function analyzeProblemImage(input: {
+  imageDataUrl: string;
+  service: string;
+}): Promise<string> {
+  const response = await request<{ description: string }>('/ai/analyze-image', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  }, true);
+  return response.description;
+}

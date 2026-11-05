@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import L from 'leaflet';
-import { MapPin, Clock, IndianRupee, X, Image as ImageIcon, Map, Check } from 'lucide-react';
+import { MapPin, Clock, IndianRupee, X, Image as ImageIcon, Map, Check, Sparkles } from 'lucide-react';
+import { analyzeProblemImage } from '../../services/api';
 
 interface CreateRequestModalProps {
   onClose: () => void;
@@ -23,22 +24,96 @@ const CreateRequestModal: React.FC<CreateRequestModalProps> = ({ onClose, onSubm
   const [time, setTime] = useState('Now');
   const [offer, setOffer] = useState('');
   const [description, setDescription] = useState('');
+  const [aiDescription, setAiDescription] = useState('');
   const [imageUrl, setImageUrl] = useState('');
+  const [isAnalyzingImage, setIsAnalyzingImage] = useState(false);
+  const [imageAnalysisError, setImageAnalysisError] = useState('');
 
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const markerRef = useRef<L.Marker | null>(null);
+  const imageAnalysisRequestRef = useRef(0);
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        if (event.target?.result) {
-          setImageUrl(event.target.result as string);
+    e.currentTarget.value = '';
+    if (!file) return;
+
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+      setImageAnalysisError('Choose a JPEG, PNG, or WebP image.');
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setImageAnalysisError('Choose an image smaller than 5 MB.');
+      return;
+    }
+
+    const requestId = ++imageAnalysisRequestRef.current;
+    setImageAnalysisError('');
+    setIsAnalyzingImage(true);
+    setImageUrl('');
+    setDescription(currentDescription => aiDescription
+      ? currentDescription.replace(aiDescription, '').trim()
+      : currentDescription);
+    setAiDescription('');
+    const reader = new FileReader();
+    reader.onload = async () => {
+      if (requestId !== imageAnalysisRequestRef.current) return;
+      const dataUrl = typeof reader.result === 'string' ? reader.result : '';
+      setImageUrl(dataUrl);
+      if (!dataUrl) {
+        setImageAnalysisError('Unable to read this image. Please try another file.');
+        setIsAnalyzingImage(false);
+        return;
+      }
+
+      try {
+        const generatedDescription = await analyzeProblemImage({ imageDataUrl: dataUrl, service });
+        if (requestId !== imageAnalysisRequestRef.current) return;
+        setDescription(currentDescription => {
+          const userDescription = aiDescription
+            ? currentDescription.replace(aiDescription, '').trim()
+            : currentDescription.trim();
+          return [userDescription, generatedDescription].filter(Boolean).join('\n\n');
+        });
+        setAiDescription(generatedDescription);
+      } catch (error) {
+        if (requestId === imageAnalysisRequestRef.current) {
+          setImageAnalysisError(error instanceof Error ? error.message : 'Unable to analyze this photo.');
         }
-      };
-      reader.readAsDataURL(file);
+      } finally {
+        if (requestId === imageAnalysisRequestRef.current) setIsAnalyzingImage(false);
+      }
+    };
+    reader.onerror = () => {
+      if (requestId !== imageAnalysisRequestRef.current) return;
+      setImageAnalysisError('Unable to read this image. Please try another file.');
+      setIsAnalyzingImage(false);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleAnalyzeImageAgain = async () => {
+    if (!imageUrl) return;
+    const requestId = ++imageAnalysisRequestRef.current;
+    setIsAnalyzingImage(true);
+    setImageAnalysisError('');
+    try {
+      const generatedDescription = await analyzeProblemImage({ imageDataUrl: imageUrl, service });
+      if (requestId !== imageAnalysisRequestRef.current) return;
+      setDescription(currentDescription => {
+        const userDescription = aiDescription
+          ? currentDescription.replace(aiDescription, '').trim()
+          : currentDescription.trim();
+        return [userDescription, generatedDescription].filter(Boolean).join('\n\n');
+      });
+      setAiDescription(generatedDescription);
+    } catch (error) {
+      if (requestId === imageAnalysisRequestRef.current) {
+        setImageAnalysisError(error instanceof Error ? error.message : 'Unable to analyze this photo.');
+      }
+    } finally {
+      if (requestId === imageAnalysisRequestRef.current) setIsAnalyzingImage(false);
     }
   };
 
@@ -139,7 +214,7 @@ const CreateRequestModal: React.FC<CreateRequestModalProps> = ({ onClose, onSubm
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (service && offer) {
+    if (service && offer && !isAnalyzingImage) {
       onSubmit(service, offer, description, imageUrl);
     }
   };
@@ -187,7 +262,7 @@ const CreateRequestModal: React.FC<CreateRequestModalProps> = ({ onClose, onSubm
                <label className="flex items-center justify-center w-full py-2 cursor-pointer hover:bg-gray-100 rounded-xl transition-colors">
                   <ImageIcon className="w-5 h-5 text-gray-400 mr-2 shrink-0" />
                   <span className="text-sm font-semibold">{imageUrl ? 'Photo Attached (Tap to change)' : 'Upload Issue Photo'}</span>
-                  <input type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
+                  <input type="file" accept="image/jpeg,image/png,image/webp" className="hidden" onChange={handleImageUpload} />
                </label>
             </div>
             {imageUrl && (
@@ -195,11 +270,41 @@ const CreateRequestModal: React.FC<CreateRequestModalProps> = ({ onClose, onSubm
                 <img src={imageUrl} alt="Attachment preview" className="w-full h-28 object-cover rounded-xl border border-gray-200" />
                 <button 
                   type="button" 
-                  onClick={() => setImageUrl('')} 
+                  onClick={() => {
+                    imageAnalysisRequestRef.current += 1;
+                    setImageUrl('');
+                    setImageAnalysisError('');
+                    setIsAnalyzingImage(false);
+                    setDescription(currentDescription => aiDescription
+                      ? currentDescription.replace(aiDescription, '').trim()
+                      : currentDescription);
+                    setAiDescription('');
+                  }}
                   className="absolute top-2 right-2 bg-black/60 text-white p-1.5 rounded-full hover:bg-black/80"
                 >
                   <X className="w-3.5 h-3.5" />
                 </button>
+              </div>
+            )}
+            {isAnalyzingImage && (
+              <p className="mt-2 flex items-center gap-2 text-xs font-medium text-indigo-700" role="status">
+                <Sparkles className="h-4 w-4 animate-pulse" />
+                Gemini is analyzing the photo…
+              </p>
+            )}
+            {imageAnalysisError && (
+              <div className="mt-2 flex items-center justify-between gap-2 text-xs text-red-700" role="alert">
+                <span>{imageAnalysisError}</span>
+                {imageUrl && (
+                  <button
+                    type="button"
+                    onClick={() => void handleAnalyzeImageAgain()}
+                    disabled={isAnalyzingImage}
+                    className="shrink-0 font-bold text-indigo-700 underline disabled:opacity-50"
+                  >
+                    Retry
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -302,7 +407,7 @@ const CreateRequestModal: React.FC<CreateRequestModalProps> = ({ onClose, onSubm
 
           <button 
             type="submit"
-            disabled={!service || !offer}
+            disabled={!service || !offer || isAnalyzingImage}
             className="w-full mt-2 bg-indigo-600 text-white font-extrabold text-base py-4 rounded-2xl hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-[0_8px_20px_rgba(79,70,229,0.3)] active:scale-95"
           >
             Broadcast Request to Nearby AIDMATEs
