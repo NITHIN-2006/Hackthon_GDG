@@ -5,13 +5,27 @@ interface ReviewModalProps {
   role: 'seeker' | 'provider';
   targetName: string;
   onClose: () => void;
-  onSubmit: (rating: number, feedback: string) => void;
+  onSubmit: (rating: number, feedback: string) => void | Promise<void>;
 }
 
 const ReviewModal: React.FC<ReviewModalProps> = ({ role, targetName, onClose, onSubmit }) => {
   const [rating, setRating] = useState(0);
   const [hoverRating, setHoverRating] = useState(0);
   const [feedback, setFeedback] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleSubmit = async () => {
+    setIsSubmitting(true);
+    setError('');
+    try {
+      await onSubmit(rating, feedback);
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : 'Unable to save your review.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   const title = role === 'provider' 
     ? `Rate the customer: ${targetName}` 
@@ -63,12 +77,18 @@ const ReviewModal: React.FC<ReviewModalProps> = ({ role, targetName, onClose, on
           />
         </div>
 
+        {error && (
+          <p role="alert" className="mb-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+            {error}
+          </p>
+        )}
+
         <button
-          onClick={() => onSubmit(rating, feedback)}
-          disabled={rating === 0}
+          onClick={() => void handleSubmit()}
+          disabled={rating === 0 || isSubmitting}
           className="w-full bg-indigo-600 text-white font-bold text-lg py-4 rounded-xl hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
-          Submit Review
+          {isSubmitting ? 'Saving Review…' : 'Submit Review'}
         </button>
       </div>
     </div>

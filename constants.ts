@@ -15,11 +15,6 @@ export const PREDEFINED_SERVICES = [
   'Tutoring'
 ];
 
-export const ADMIN_CREDENTIALS = {
-  username: 'admin',
-  password: 'AidoAdmin#Secure2026!'
-};
-
 export const MOCK_VERIFIED_AIDMATES: AidmateProfile[] = [
   {
     id: 'aidmate-1',

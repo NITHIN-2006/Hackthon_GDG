@@ -84,6 +84,7 @@ export interface Deal {
   imageUrl?: string;
   status?: 'pending' | 'accepted' | 'completed';
   providerName?: string;
+  providerMobile?: string;
   providerLocation?: { lat: number; lng: number };
 }
 

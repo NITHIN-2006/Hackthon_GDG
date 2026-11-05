@@ -9,6 +9,7 @@ import NotificationToast from './components/ui/NotificationToast';
 import ActiveJobExecution from './components/jobs/ActiveJobExecution';
 import { initializeFirebase, onForegroundMessage } from './firebase';
 import { MOCK_PENDING_AIDMATES, MOCK_VERIFIED_AIDMATES } from './constants';
+import { clearAuthSession, restoreAuthSession, submitReview } from './services/api';
 
 
 type View = 'signup' | 'home-dashboard' | 'admin-dashboard' | 'chat' | 'settings';
@@ -20,6 +21,7 @@ const App: React.FC = () => {
   const [activeChatDeal, setActiveChatDeal] = useState<Deal | null>(null);
   const [activeChatRole, setActiveChatRole] = useState<'seeker' | 'provider'>('seeker');
   const [notification, setNotification] = useState<Notification | null>(null);
+  const [isAuthRestoring, setIsAuthRestoring] = useState(true);
 
   const [isAidmateActive, setIsAidmateActive] = useState(false);
 
@@ -34,6 +36,33 @@ const App: React.FC = () => {
   ]);
   const [dismissedBroadcasts, setDismissedBroadcasts] = useState<Set<string | number>>(new Set());
   const [activeJob, setActiveJob] = useState<Deal | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    restoreAuthSession()
+      .then(account => {
+        if (!active || !account) return;
+        setUserData(account);
+        setUserRole(account.accountType === 'provider' ? 'provider' : 'seeker');
+        setIsAidmateActive(account.accountType === 'provider');
+        setView('home-dashboard');
+      })
+      .catch(error => {
+        if (active) {
+          setNotification({
+            title: 'Session could not be restored',
+            body: error instanceof Error ? error.message : 'Please sign in again.',
+            type: 'alert',
+          });
+        }
+      })
+      .finally(() => {
+        if (active) setIsAuthRestoring(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const fileToBase64 = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
@@ -147,6 +176,7 @@ const App: React.FC = () => {
 
   const handleSignUpSuccess = (data: UserData, role?: UserRole) => {
     setUserData(data);
+    setIsAidmateActive(role === 'provider');
     if (role === 'admin') {
       setUserRole('admin');
       setView('admin-dashboard');
@@ -156,15 +186,11 @@ const App: React.FC = () => {
     }
   };
 
-  const handleAdminLogin = () => {
-    setUserData({ name: 'Platform Admin', mobile: '9999999999' });
-    setUserRole('admin');
-    setView('admin-dashboard');
-  };
-
   const handleLogout = () => {
+    clearAuthSession();
     setUserData(null);
     setUserRole(null);
+    setIsAidmateActive(false);
     setView('signup');
   };
 
@@ -177,11 +203,30 @@ const App: React.FC = () => {
     localStorage.removeItem('job_accepted');
   };
   
-  const handleTwoWayRating = (rating: number, feedback: string, fromRole: 'seeker' | 'provider') => {
+  const handleTwoWayRating = async (
+    rating: number,
+    feedback: string,
+    fromRole: 'seeker' | 'provider',
+    job: Deal,
+  ) => {
+    const targetName = fromRole === 'seeker'
+      ? job.providerName || 'Your AidMate'
+      : job.seekerName;
+    const targetMobile = fromRole === 'seeker' ? job.providerMobile : job.seekerMobile;
+
+    await submitReview({
+      jobId: String(job.id),
+      targetName,
+      targetMobile,
+      rating,
+      comment: feedback,
+    });
+
     if (fromRole === 'seeker') {
-      // Seeker rated the AidMate
       setVerifiedAidmates(prev => prev.map(aidmate => {
-        const isMatched = activeJob ? aidmate.name === activeJob.providerName : true;
+        const isMatched = targetMobile
+          ? aidmate.mobile === targetMobile
+          : aidmate.name === targetName;
         if (isMatched) {
           const starKey = rating.toString() as '1' | '2' | '3' | '4' | '5';
           const newRatings = { ...aidmate.ratings, [starKey]: (aidmate.ratings[starKey] || 0) + 1 };
@@ -197,46 +242,33 @@ const App: React.FC = () => {
         }
         return aidmate;
       }));
+    } else if (userData) {
+      setUserData(prev => {
+        if (!prev) return prev;
+        const starKey = rating.toString() as '1' | '2' | '3' | '4' | '5';
+        const currentRatings = prev.ratings || { '5': 0, '4': 0, '3': 0, '2': 0, '1': 0 };
+        const currentCount = prev.reviewCount || 0;
+        const currentOverall = prev.overallRating || 0;
+        const newCount = currentCount + 1;
+        const newRatings = { ...currentRatings, [starKey]: (currentRatings[starKey] || 0) + 1 };
+        const newOverall = Number((((currentOverall * currentCount) + rating) / newCount).toFixed(1));
 
-      window.dispatchEvent(new CustomEvent('show-notification', {
-        detail: { 
-          title: 'AidMate Rated Successfully', 
-          body: `You gave a ${rating}-star rating. Thank you for building community trust!`, 
-          type: 'success' 
-        }
-      }));
-    } else {
-      // AidMate (provider) rated the Seeker (user)
-      if (userData) {
-        setUserData(prev => {
-          if (!prev) return prev;
-          const starKey = rating.toString() as '1' | '2' | '3' | '4' | '5';
-          const currentRatings = prev.ratings || { '5': 1, '4': 0, '3': 0, '2': 0, '1': 0 };
-          const currentCount = prev.reviewCount || 1;
-          const currentOverall = prev.overallRating || 5.0;
-
-          const newRatings = { ...currentRatings, [starKey]: (currentRatings[starKey] || 0) + 1 };
-          const newCount = currentCount + 1;
-          const totalScore = (currentOverall * currentCount) + rating;
-          const newOverall = parseFloat((totalScore / newCount).toFixed(1));
-
-          return {
-            ...prev,
-            ratings: newRatings,
-            reviewCount: newCount,
-            overallRating: newOverall
-          };
-        });
-      }
-
-      window.dispatchEvent(new CustomEvent('show-notification', {
-        detail: { 
-          title: 'Customer Rated Successfully', 
-          body: `You gave ${rating} stars to the customer. Community reputation updated!`, 
-          type: 'success' 
-        }
-      }));
+        return {
+          ...prev,
+          ratings: newRatings,
+          reviewCount: newCount,
+          overallRating: newOverall,
+        };
+      });
     }
+
+    window.dispatchEvent(new CustomEvent('show-notification', {
+      detail: {
+        title: 'Review Submitted',
+        body: `Your ${rating}-star rating and feedback have been saved.`,
+        type: 'success',
+      },
+    }));
   };
 
   const handleCompleteJob = () => {
@@ -493,9 +525,7 @@ const App: React.FC = () => {
     return (
       <SignUpPage 
         onSignUpSuccess={handleSignUpSuccess} 
-        onAdminLogin={handleAdminLogin}
         onRegisterAidmatePending={handleRegisterAidmatePending}
-        verifiedAidmates={verifiedAidmates}
       />
     );
   };
@@ -503,7 +533,11 @@ const App: React.FC = () => {
   return (
     <div className="bg-gray-50 min-h-screen">
       <main className="max-w-4xl mx-auto p-4 sm:p-6 lg:p-8">
-        {renderContent()}
+        {isAuthRestoring ? (
+          <div className="flex min-h-[50vh] items-center justify-center text-sm font-semibold text-gray-500">
+            Restoring your session…
+          </div>
+        ) : renderContent()}
       </main>
       {notification && (
         <NotificationToast 

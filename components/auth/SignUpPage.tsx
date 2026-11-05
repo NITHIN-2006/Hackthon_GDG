@@ -1,36 +1,33 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { UserData, UserRole, PendingAidmate, AidmateProfile } from '../../types';
+import { UserData, UserRole, PendingAidmate } from '../../types';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
-import { Shield, CheckCircle, Lock, Key, AlertCircle, Eye, EyeOff, User, Wrench, Upload, FileCheck, Award, X, LogIn, UserPlus } from 'lucide-react';
-import { ADMIN_CREDENTIALS } from '../../constants';
+import { Lock, User, Wrench, Upload, FileCheck, Award, X, LogIn, UserPlus, ExternalLink } from 'lucide-react';
+import { AuthAccount, getUserRole, loginAccount, registerAccount } from '../../services/api';
+
+const ADMIN_PANEL_URL = import.meta.env.VITE_ADMIN_PANEL_URL || 'http://localhost:9000';
 
 interface SignUpPageProps {
   onSignUpSuccess: (data: UserData, role?: UserRole) => void;
-  onAdminLogin?: () => void;
   onRegisterAidmatePending?: (pendingData: PendingAidmate) => void;
-  verifiedAidmates?: AidmateProfile[];
 }
 
 const SignUpPage: React.FC<SignUpPageProps> = ({ 
   onSignUpSuccess, 
-  onAdminLogin, 
   onRegisterAidmatePending,
-  verifiedAidmates = []
 }) => {
   const [name, setName] = useState('');
   const [mobile, setMobile] = useState('');
+  const [password, setPassword] = useState('');
   const [isFormValid, setIsFormValid] = useState(false);
   const [isVerifying, setIsVerifying] = useState(false);
-  const [isVerified, setIsVerified] = useState(false);
+  const [authError, setAuthError] = useState('');
 
-  // Main Tabs: 'user' | 'aidmate' | 'admin'
-  const [activeTab, setActiveTab] = useState<'user' | 'aidmate' | 'admin'>('user');
-  
-  // AidMate sub-mode: 'login' (returning AidMate) vs 'register' (new AidMate with certificate)
+  const [activeTab, setActiveTab] = useState<'user' | 'aidmate'>('user');
+  const [userMode, setUserMode] = useState<'login' | 'register'>('login');
   const [aidmateMode, setAidmateMode] = useState<'login' | 'register'>('login');
+  const [registeredAidmate, setRegisteredAidmate] = useState<AuthAccount | null>(null);
 
-  // AidMate Registration specific states
   const [aidmateSkill, setAidmateSkill] = useState('Plumbing');
   const [experienceYears, setExperienceYears] = useState('3');
   const [certificateName, setCertificateName] = useState('');
@@ -39,26 +36,18 @@ const SignUpPage: React.FC<SignUpPageProps> = ({
   const [certificateType, setCertificateType] = useState('Trade Certificate / ITI / Government Certification');
   const [isSubmittedForVerification, setIsSubmittedForVerification] = useState(false);
 
-  // Admin credentials state
-  const [adminUsername, setAdminUsername] = useState('');
-  const [adminPassword, setAdminPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
-  const [adminError, setAdminError] = useState('');
-  const [isAdminAuthenticating, setIsAdminAuthenticating] = useState(false);
-
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (activeTab === 'admin') {
-      setIsFormValid(adminUsername.trim().length > 0 && adminPassword.length > 0);
-    } else if (activeTab === 'aidmate' && aidmateMode === 'login') {
-      const isMobileValid = /^\d{10}$/.test(mobile);
-      setIsFormValid(isMobileValid);
-    } else {
-      const isMobileValid = /^\d{10}$/.test(mobile);
-      setIsFormValid(name.trim().length > 2 && isMobileValid);
-    }
-  }, [name, mobile, activeTab, aidmateMode, adminUsername, adminPassword]);
+    const registering = activeTab === 'user'
+      ? userMode === 'register'
+      : aidmateMode === 'register';
+    setIsFormValid(
+      /^\d{10}$/.test(mobile) &&
+      password.length >= 8 &&
+      (!registering || name.trim().length > 2),
+    );
+  }, [name, mobile, password, activeTab, userMode, aidmateMode]);
 
   const handleMobileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value.replace(/\D/g, '');
@@ -90,65 +79,58 @@ const SignUpPage: React.FC<SignUpPageProps> = ({
     }
   };
 
-  const handleUserSubmit = (e: React.FormEvent) => {
+  const handleUserSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!isFormValid) return;
 
     setIsVerifying(true);
-    setTimeout(() => {
+    setAuthError('');
+    try {
+      const account = userMode === 'register'
+        ? await registerAccount({ name: name.trim(), mobile, password, accountType: 'seeker' })
+        : await loginAccount({ mobile, password, accountType: 'seeker' });
+      onSignUpSuccess(account, getUserRole(account));
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : 'Unable to authenticate. Please try again.');
+    } finally {
       setIsVerifying(false);
-      setIsVerified(true);
-      setTimeout(() => {
-        onSignUpSuccess({ 
-          name, 
-          mobile,
-          overallRating: 5.0,
-          reviewCount: 1,
-          ratings: { '5': 1, '4': 0, '3': 0, '2': 0, '1': 0 }
-        }, 'seeker');
-      }, 1000);
-    }, 1200);
+    }
   };
 
-  // RETURNING AIDMATE LOGIN (Fast Mobile OTP Login)
-  const handleAidmateLoginSubmit = (e: React.FormEvent) => {
+  const handleAidmateLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!isFormValid) return;
 
     setIsVerifying(true);
-    setTimeout(() => {
+    setAuthError('');
+    try {
+      const account = await loginAccount({ mobile, password, accountType: 'provider' });
+      onSignUpSuccess(account, getUserRole(account));
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : 'Unable to authenticate. Please try again.');
+    } finally {
       setIsVerifying(false);
-      setIsVerified(true);
-      
-      // Look up existing AidMate if registered, or initialize profile
-      const existing = verifiedAidmates.find(a => a.mobile === mobile);
-      const aidmateName = existing ? existing.name : (name.trim() || 'AidMate Professional');
-
-      setTimeout(() => {
-        onSignUpSuccess({ 
-          name: aidmateName, 
-          mobile,
-          overallRating: existing?.overallRating || 5.0,
-          reviewCount: existing?.reviewCount || 1,
-          ratings: existing?.ratings || { '5': 1, '4': 0, '3': 0, '2': 0, '1': 0 }
-        }, 'provider');
-      }, 1000);
-    }, 1200);
+    }
   };
 
-  // NEW AIDMATE REGISTRATION WITH CERTIFICATE
-  const handleAidmateRegisterSubmit = (e: React.FormEvent) => {
+  const handleAidmateRegisterSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!isFormValid) return;
 
     setIsVerifying(true);
-
-    setTimeout(() => {
-      setIsVerifying(false);
-
+    setAuthError('');
+    try {
+      const account = await registerAccount({
+        name: name.trim(),
+        mobile,
+        password,
+        accountType: 'provider',
+        skills: [aidmateSkill],
+      });
+      setRegisteredAidmate(account);
       const newPendingAidmate: PendingAidmate = {
         id: `pending-${Date.now()}`,
-        name,
+        name: account.name,
         mobile,
         providerType: 'professional',
         submissionDate: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
@@ -167,30 +149,11 @@ const SignUpPage: React.FC<SignUpPageProps> = ({
       }
 
       setIsSubmittedForVerification(true);
-    }, 1200);
-  };
-
-  const handleAdminSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    setAdminError('');
-
-    if (
-      adminUsername.trim() !== ADMIN_CREDENTIALS.username ||
-      adminPassword !== ADMIN_CREDENTIALS.password
-    ) {
-      setAdminError('Invalid administrator username or password. Access denied.');
-      return;
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : 'Unable to register. Please try again.');
+    } finally {
+      setIsVerifying(false);
     }
-
-    setIsAdminAuthenticating(true);
-    setTimeout(() => {
-      setIsAdminAuthenticating(false);
-      if (onAdminLogin) {
-        onAdminLogin();
-      } else {
-        onSignUpSuccess({ name: 'System Administrator', mobile: '9999999999' }, 'admin');
-      }
-    }, 800);
   };
 
   return (
@@ -243,15 +206,8 @@ const SignUpPage: React.FC<SignUpPageProps> = ({
 
           <div className="space-y-2">
             <button
-              onClick={() => {
-                onSignUpSuccess({ 
-                  name, 
-                  mobile,
-                  overallRating: 5.0,
-                  reviewCount: 1,
-                  ratings: { '5': 1, '4': 0, '3': 0, '2': 0, '1': 0 }
-                }, 'provider');
-              }}
+              onClick={() => registeredAidmate && onSignUpSuccess(registeredAidmate, 'provider')}
+              disabled={!registeredAidmate}
               className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-sm rounded-2xl transition-all shadow-md flex items-center justify-center gap-1.5"
             >
               <LogIn className="w-4 h-4" /> Enter AidMate Dashboard
@@ -267,16 +223,6 @@ const SignUpPage: React.FC<SignUpPageProps> = ({
             </button>
           </div>
         </div>
-      ) : isVerified ? (
-        <div className="flex flex-col items-center justify-center animate-in zoom-in-95 duration-200">
-          <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center text-green-600 mb-3 shadow-sm">
-            <CheckCircle className="w-12 h-12" />
-          </div>
-          <p className="text-lg font-extrabold text-gray-800">
-            {activeTab === 'aidmate' ? 'AidMate Verified' : 'User Verified'}
-          </p>
-          <p className="text-xs text-gray-500 mt-1">Entering your dashboard...</p>
-        </div>
       ) : (
         <div className="w-full max-w-sm bg-white p-6 sm:p-7 rounded-3xl shadow-xl border border-gray-100">
           {/* Main Role Tabs */}
@@ -285,7 +231,6 @@ const SignUpPage: React.FC<SignUpPageProps> = ({
               type="button"
               onClick={() => {
                 setActiveTab('user');
-                setAdminError('');
               }}
               className={`flex-1 pb-3 text-xs sm:text-sm font-extrabold border-b-2 transition-colors flex items-center justify-center gap-1 ${
                 activeTab === 'user' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-gray-400 hover:text-gray-600'
@@ -299,7 +244,6 @@ const SignUpPage: React.FC<SignUpPageProps> = ({
               type="button"
               onClick={() => {
                 setActiveTab('aidmate');
-                setAdminError('');
               }}
               className={`flex-1 pb-3 text-xs sm:text-sm font-extrabold border-b-2 transition-colors flex items-center justify-center gap-1 ${
                 activeTab === 'aidmate' ? 'border-emerald-600 text-emerald-600' : 'border-transparent text-gray-400 hover:text-gray-600'
@@ -309,24 +253,28 @@ const SignUpPage: React.FC<SignUpPageProps> = ({
               <span>AidMate Portal</span>
             </button>
 
-            <button
-              type="button"
-              onClick={() => {
-                setActiveTab('admin');
-                setAdminError('');
-              }}
-              className={`pb-3 px-2 text-xs sm:text-sm font-extrabold border-b-2 transition-colors flex items-center justify-center gap-1 ${
-                activeTab === 'admin' ? 'border-purple-600 text-purple-600' : 'border-transparent text-gray-400 hover:text-gray-600'
-              }`}
-            >
-              <Shield className="w-3.5 h-3.5" />
-              <span>Admin</span>
-            </button>
           </div>
 
           {activeTab === 'user' && (
             /* USER / CUSTOMER LOGIN */
             <form onSubmit={handleUserSubmit} className="space-y-4">
+              <div className="bg-gray-100 p-1 rounded-2xl flex text-xs font-bold">
+                {(['login', 'register'] as const).map(mode => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => {
+                      setUserMode(mode);
+                      setAuthError('');
+                    }}
+                    className={`flex-1 py-2 rounded-xl transition-all ${
+                      userMode === mode ? 'bg-white text-indigo-800 shadow-sm' : 'text-gray-500'
+                    }`}
+                  >
+                    {mode === 'login' ? 'Login' : 'Create Account'}
+                  </button>
+                ))}
+              </div>
               <div className="bg-indigo-50 border border-indigo-100 rounded-2xl p-3 text-xs text-indigo-900 mb-2">
                 <p className="font-bold flex items-center gap-1.5 text-indigo-950">
                   <User className="w-3.5 h-3.5 text-indigo-600" /> Community User Portal
@@ -336,15 +284,17 @@ const SignUpPage: React.FC<SignUpPageProps> = ({
                 </p>
               </div>
 
-              <Input
-                id="name"
-                label="Full Name"
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="e.g. Ramesh Kumar"
-                required
-              />
+              {userMode === 'register' && (
+                <Input
+                  id="name"
+                  label="Full Name"
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="e.g. Ramesh Kumar"
+                  required
+                />
+              )}
               <div className="space-y-1">
                 <Input
                   id="mobile"
@@ -358,11 +308,26 @@ const SignUpPage: React.FC<SignUpPageProps> = ({
                   title="Mobile number must be 10 digits"
                   placeholder="9876543210"
                 />
-                <p className="text-[11px] text-gray-400 text-center">SIM must be active in device</p>
               </div>
+              <Input
+                id="user-password"
+                label="Password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="At least 8 characters"
+                autoComplete={userMode === 'register' ? 'new-password' : 'current-password'}
+                required
+                minLength={8}
+              />
+              {authError && (
+                <p role="alert" className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                  {authError}
+                </p>
+              )}
 
               <Button type="submit" disabled={!isFormValid} isLoading={isVerifying} className="w-full py-3.5 rounded-2xl bg-indigo-600 hover:bg-indigo-700">
-                Login as User
+                {userMode === 'register' ? 'Create User Account' : 'Login as User'}
               </Button>
             </form>
           )}
@@ -373,7 +338,10 @@ const SignUpPage: React.FC<SignUpPageProps> = ({
               <div className="bg-gray-100 p-1 rounded-2xl flex text-xs font-bold mb-2">
                 <button
                   type="button"
-                  onClick={() => setAidmateMode('login')}
+                  onClick={() => {
+                    setAidmateMode('login');
+                    setAuthError('');
+                  }}
                   className={`flex-1 py-2 rounded-xl transition-all flex items-center justify-center gap-1.5 ${
                     aidmateMode === 'login'
                       ? 'bg-white text-emerald-800 shadow-sm'
@@ -385,7 +353,10 @@ const SignUpPage: React.FC<SignUpPageProps> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={() => setAidmateMode('register')}
+                  onClick={() => {
+                    setAidmateMode('register');
+                    setAuthError('');
+                  }}
                   className={`flex-1 py-2 rounded-xl transition-all flex items-center justify-center gap-1.5 ${
                     aidmateMode === 'register'
                       ? 'bg-white text-emerald-800 shadow-sm'
@@ -422,8 +393,23 @@ const SignUpPage: React.FC<SignUpPageProps> = ({
                       title="Mobile number must be 10 digits"
                       placeholder="9876543210"
                     />
-                    <p className="text-[11px] text-gray-400 text-center">Instant OTP verification</p>
                   </div>
+                  <Input
+                    id="aidmate-login-password"
+                    label="Password"
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="Your password"
+                    autoComplete="current-password"
+                    required
+                    minLength={8}
+                  />
+                  {authError && (
+                    <p role="alert" className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                      {authError}
+                    </p>
+                  )}
 
                   <Button type="submit" disabled={!isFormValid} isLoading={isVerifying} className="w-full py-3.5 rounded-2xl bg-emerald-600 hover:bg-emerald-700 flex items-center justify-center gap-1.5">
                     <LogIn className="w-4 h-4" />
@@ -476,6 +462,23 @@ const SignUpPage: React.FC<SignUpPageProps> = ({
                       placeholder="9876543210"
                     />
                   </div>
+
+                  <Input
+                    id="aidmate-register-password"
+                    label="Create Password"
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="At least 8 characters"
+                    autoComplete="new-password"
+                    required
+                    minLength={8}
+                  />
+                  {authError && (
+                    <p role="alert" className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                      {authError}
+                    </p>
+                  )}
 
                   <div className="grid grid-cols-2 gap-2">
                     <div>
@@ -592,82 +595,21 @@ const SignUpPage: React.FC<SignUpPageProps> = ({
             </div>
           )}
 
-          {activeTab === 'admin' && (
-            /* SECURE ADMIN LOGIN - CREDENTIALS ARE NOT DISPLAYED ON THE PAGE */
-            <form onSubmit={handleAdminSubmit} className="space-y-4">
-              <div className="bg-purple-50 border border-purple-100 rounded-2xl p-3 text-xs text-purple-900 mb-2">
-                <p className="font-bold flex items-center gap-1.5 text-purple-950">
-                  <Shield className="w-3.5 h-3.5 text-purple-600" /> Restricted Administrator Access
-                </p>
-                <p className="text-[11px] text-purple-700/90 mt-0.5">
-                  Sign in with authorized administrator credentials to review applications and verify AidMates.
-                </p>
-              </div>
-
-              {adminError && (
-                <div className="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded-xl text-xs flex items-center gap-2 animate-in fade-in">
-                  <AlertCircle className="w-4 h-4 shrink-0 text-red-600" />
-                  <span>{adminError}</span>
-                </div>
-              )}
-
-              <div>
-                <label className="block text-xs font-bold text-gray-700 mb-1">Admin Username</label>
-                <input
-                  type="text"
-                  value={adminUsername}
-                  onChange={(e) => setAdminUsername(e.target.value)}
-                  placeholder="Enter admin username"
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-purple-500 text-sm"
-                  required
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-gray-700 mb-1">Admin Password</label>
-                <div className="relative">
-                  <input
-                    type={showPassword ? 'text' : 'password'}
-                    value={adminPassword}
-                    onChange={(e) => setAdminPassword(e.target.value)}
-                    placeholder="Enter admin password"
-                    className="w-full px-3.5 py-2.5 pr-10 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-purple-500 text-sm font-mono"
-                    required
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                    title={showPassword ? 'Hide password' : 'Show password'}
-                  >
-                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-              </div>
-
-              <button
-                type="submit"
-                disabled={!isFormValid || isAdminAuthenticating}
-                className="w-full py-3.5 rounded-2xl bg-purple-600 hover:bg-purple-700 text-white font-extrabold text-sm shadow-md transition-all active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-              >
-                {isAdminAuthenticating ? (
-                  <span>Authenticating Admin...</span>
-                ) : (
-                  <>
-                    <Key className="w-4 h-4" />
-                    <span>Login to Admin Portal</span>
-                  </>
-                )}
-              </button>
-            </form>
-          )}
-
           {/* Bottom Security Disclaimer */}
           <div className="mt-5 pt-3 border-t border-gray-100 text-center">
             <p className="text-[11px] text-gray-400 flex items-center justify-center gap-1">
               <Lock className="w-3 h-3" />
-              <span>AidMate document verification is strictly restricted to Admin</span>
+              <span>Administrator access is managed through the AIDO Admin Panel</span>
             </p>
+            <a
+              href={ADMIN_PANEL_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-2 inline-flex items-center gap-1 text-xs font-bold text-indigo-600 hover:text-indigo-700"
+            >
+              Open Admin Panel
+              <ExternalLink className="h-3 w-3" />
+            </a>
           </div>
         </div>
       )}

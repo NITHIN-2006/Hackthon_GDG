@@ -8,7 +8,7 @@ interface ActiveJobExecutionProps {
   job: Deal;
   role: 'seeker' | 'provider';
   onComplete: () => void;
-  onRate?: (rating: number, feedback: string, fromRole: 'seeker' | 'provider') => void;
+  onRate?: (rating: number, feedback: string, fromRole: 'seeker' | 'provider', job: Deal) => void | Promise<void>;
   onChat?: () => void;
 }
 
@@ -111,10 +111,8 @@ const ActiveJobExecution: React.FC<ActiveJobExecutionProps> = ({ job, role, onCo
             role="seeker"
             targetName={job.providerName || "Your AidMate"}
             onClose={() => setShowReview(false)}
-            onSubmit={(rating, feedback) => {
-              if (onRate) {
-                onRate(rating, feedback, 'seeker');
-              }
+            onSubmit={async (rating, feedback) => {
+              await onRate?.(rating, feedback, 'seeker', job);
               setShowReview(false);
               onComplete();
             }}
@@ -267,10 +265,8 @@ const ActiveJobExecution: React.FC<ActiveJobExecutionProps> = ({ job, role, onCo
            role="provider"
            targetName={job.seekerName}
            onClose={() => setShowReview(false)}
-           onSubmit={(rating, feedback) => {
-             if (onRate) {
-               onRate(rating, feedback, 'provider');
-             }
+           onSubmit={async (rating, feedback) => {
+             await onRate?.(rating, feedback, 'provider', job);
              setShowReview(false);
              onComplete();
            }}
